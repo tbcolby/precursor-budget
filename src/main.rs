@@ -1,121 +1,88 @@
-//! Precursor Budget Ledger
+//! Budget Ledger: income and expenses for Precursor.
 //!
-//! Track income and expenses in a hardware vault.
-//! Every dollar accounted for, encrypted at rest.
-
-#![cfg_attr(target_os = "none", no_std)]
-#![cfg_attr(target_os = "none", no_main)]
-
+//! This file only routes messages. Money, dates, totals and the screen state
+//! machine live in `budget-core` (host-tested); `app.rs` draws and talks to
+//! the PDDB. There is no timer: nothing changes on screen without a key press.
 
 mod app;
-mod ledger;
-mod storage;
-mod ui;
 
-use app::BudgetApp;
-use num_traits::FromPrimitive;
-use num_traits::ToPrimitive;
+use num_traits::{FromPrimitive, ToPrimitive};
+use precursor_appkit::{app as kit, keys, store};
 
+/// xous-names server name. Any unique string; NOT the GAM app name.
 const SERVER_NAME: &str = "_Budget Ledger_";
-const APP_NAME: &str = "Budget Ledger";
 
 #[derive(Debug, num_derive::FromPrimitive, num_derive::ToPrimitive)]
-enum AppOp {
+pub(crate) enum AppOp {
     Redraw = 0,
-    Rawkeys = 1,
-    FocusChange = 2,
-    Quit = 255,
+    Rawkeys,
+    FocusChange,
+    BasisChanged,
+    Quit,
 }
 
 fn main() -> ! {
     log_server::init_wait().unwrap();
     log::set_max_level(log::LevelFilter::Info);
-    log::info!("Budget Ledger starting, PID {}", xous::process::id());
+    log::info!("budget PID is {}", xous::process::id());
 
     let xns = xous_names::XousNames::new().unwrap();
-    let sid = xns
-        .register_name(SERVER_NAME, None)
-        .expect("can't register server");
-    let gam = gam::Gam::new(&xns).expect("can't connect to GAM");
+    let sid = xns.register_name(SERVER_NAME, None).expect("can't register server");
 
-    let token = gam
-        .register_ux(gam::UxRegistration {
-            app_name: String::from(gam::APP_NAME_BUDGET),
-            ux_type: gam::UxType::Framebuffer,
-            predictor: None,
-            listener: sid.to_array(),
-            redraw_id: AppOp::Redraw.to_u32().unwrap(),
-            gotinput_id: None,
-            audioframe_id: None,
-            rawkeys_id: Some(AppOp::Rawkeys.to_u32().unwrap()),
-            focuschange_id: Some(AppOp::FocusChange.to_u32().unwrap()),
-        })
-        .expect("couldn't register UX")
-        .unwrap();
+    // GAM app name comes from apps/manifest.json key "budget".
+    let reg = kit::register(
+        &xns,
+        sid,
+        gam::APP_NAME_BUDGET,
+        gam::UxType::Framebuffer,
+        kit::Opcodes {
+            redraw: AppOp::Redraw.to_u32().unwrap(),
+            rawkeys: Some(AppOp::Rawkeys.to_u32().unwrap()),
+            focus_change: Some(AppOp::FocusChange.to_u32().unwrap()),
+            got_input: None,
+        },
+    );
 
-    let content = gam
-        .request_content_canvas(token)
-        .expect("couldn't get canvas");
-    let screensize = gam
-        .get_canvas_bounds(content)
-        .expect("couldn't get dimensions");
-    log::info!("Canvas size: {:?}", screensize);
+    let store = store::Store::open(app::DICT);
+    store::watch_bases(xous::connect(sid).unwrap(), AppOp::BasisChanged.to_usize().unwrap());
 
-    let mut app = BudgetApp::new();
-    app.init_storage();
-    let mut allow_redraw = true;
-    ui::draw(&app, &gam, content);
+    let mut app = app::App::new(&xns, reg.screen, store);
+    let mut focused = false;
 
     loop {
         let msg = xous::receive_message(sid).unwrap();
         match FromPrimitive::from_usize(msg.body.id()) {
             Some(AppOp::Redraw) => {
-                if allow_redraw {
-                    app.needs_redraw = true;
-                    ui::draw(&app, &gam, content);
+                if focused {
+                    app.draw();
                 }
             }
             Some(AppOp::Rawkeys) => xous::msg_scalar_unpack!(msg, k1, k2, k3, k4, {
-                let keys = [
-                    core::char::from_u32(k1 as u32).unwrap_or('\u{0000}'),
-                    core::char::from_u32(k2 as u32).unwrap_or('\u{0000}'),
-                    core::char::from_u32(k3 as u32).unwrap_or('\u{0000}'),
-                    core::char::from_u32(k4 as u32).unwrap_or('\u{0000}'),
-                ];
-                let mut should_quit = false;
-                for &key in keys.iter() {
-                    if key != '\u{0000}' {
-                        if !app.handle_key(key) {
-                            should_quit = true;
-                            break;
-                        }
+                for key in keys::decode_rawkeys([k1, k2, k3, k4]) {
+                    if app.on_key(key) == app::Action::Leave {
+                        kit::leave(app.screen());
                     }
                 }
-                if should_quit { break; }
-                if app.needs_redraw && allow_redraw {
-                    ui::draw(&app, &gam, content);
-                    app.needs_redraw = false;
-                }
+                app.draw();
             }),
-            Some(AppOp::FocusChange) => xous::msg_scalar_unpack!(msg, state_code, _, _, _, {
-                match gam::FocusState::convert_focus_change(state_code) {
-                    gam::FocusState::Background => {
-                        allow_redraw = false;
-                        app.save_state();
-                    }
+            Some(AppOp::FocusChange) => xous::msg_scalar_unpack!(msg, code, _, _, _, {
+                match kit::focus_state(code) {
                     gam::FocusState::Foreground => {
-                        allow_redraw = true;
-                        ui::draw(&app, &gam, content);
+                        focused = true;
+                        app.on_foreground();
                     }
+                    gam::FocusState::Background => focused = false,
                 }
             }),
+            Some(AppOp::BasisChanged) => {
+                app.reload();
+                if focused {
+                    app.draw();
+                }
+            }
             Some(AppOp::Quit) => break,
-            _ => log::warn!("unknown opcode: {:?}", msg.body.id()),
+            None => log::warn!("unknown opcode {:?}", msg.body.id()),
         }
     }
-
-    app.save_state();
-    xns.unregister_server(sid).unwrap();
-    xous::destroy_server(sid).unwrap();
-    xous::terminate_process(0)
+    kit::shutdown(&xns, sid)
 }
