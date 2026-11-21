@@ -1,0 +1,11 @@
+{
+    "budget": {
+        "context_name": "Budget Ledger",
+        "menu_name": {
+            "appmenu.budget": {
+                "en": "Budget Ledger",
+                "en-tts": "Budget Ledger"
+            }
+        }
+    }
+}

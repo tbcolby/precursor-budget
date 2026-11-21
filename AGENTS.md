@@ -1,22 +1,15 @@
-# Budget Ledger — Agent Evolution Report
+# Budget Ledger — agent notes
 
-## Agents Used
-1. **ideation.md** — Feature design, category selection
-2. **architecture.md** — State machine, cents-based currency
-3. **graphics.md** — Summary dashboard, field editing, list rendering
-4. **storage.md** — Single-array PDDB pattern
-5. **build.md** — Standard Cargo.toml
-6. **review.md** — Standards compliance
+Rebuilt 2026-11-20 on `precursor-appkit` (strategy R from the portfolio
+remediation plan). Read `CLAUDE.md` for layout. Invariants with tests in
+`core/`:
 
-## New Patterns
-- **Cents-based currency**: Store amounts as u32 cents, format with `format_cents()` for display. Avoids floating-point entirely — important on RISC-V soft-float where float ops are emulated.
-- **Amount string parsing**: User types "12.50" as string, parsed to 1250 cents. Handles partial input ("12.", "12.5") gracefully.
-- **Summary dashboard**: Aggregate view showing totals + recent items, with quick-add shortcuts.
-
-## Metrics
-| Metric | Value |
-|--------|-------|
-| Source files | 5 |
-| Estimated LOC | ~1,550 |
-| States | 5 |
-| Toolkit agents used | 6 of 12 |
+- Money is `u64`/`i64` minor units. Parsing never wraps; amounts above
+  999,999,999.99 are refused. No `f32`/`f64` anywhere.
+- Month totals, category totals and month navigation roll over correctly
+  (December to January, leap years).
+- Record keys are random and allocated only on save; `seq` (ordering) is
+  derived from stored records, never from a separate counter.
+- Storage effects are confirmed by the app before the UI commits; failed
+  saves roll back.
+- Every screen exits on Backspace or F4.

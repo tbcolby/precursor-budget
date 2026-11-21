@@ -1,23 +1,20 @@
-# Budget Ledger — Agent Instructions
-
-## App Identity
-- **Package**: `budget`
-- **SERVER_NAME**: `_Budget Ledger_`
-- **APP_NAME**: `Budget`
-- **TCP Port**: 7883
+# Budget Ledger — Build Notes
 
 ## Architecture
-- **State Machine**: 5 states (Summary, TransactionList, AddTransaction, ViewTransaction, ConfirmDelete)
-- **PDDB**: 1 dictionary (`budget.data`), 2 keys (transactions as JSON array, config)
-- **Currency**: All amounts stored as `u32` cents (no floating point)
+- `core/` (`budget-core`, no Xous deps, host-tested): `money` (integer
+  cents, parse/format, no floats), `date` (civil-day math), `ledger`
+  (transactions, month and category totals, record JSON), `settings`,
+  and the screen state machine `Ui` returning `Effect`s.
+- `src/main.rs` routes GAM messages (template pattern); `src/app.rs` maps
+  keys, performs effects via `appkit::store::Store`, draws with
+  `appkit::screen::Screen`. Today's date from `llio::LocalTime`.
+- PDDB dict `budget.ledger`: one key per transaction (`t.<16 random hex>`,
+  TRNG via `appkit::rng::Trng::try_u32`, fail closed) plus `settings`.
+  Delete removes the key. Reload on basis change; nothing is rewritten on
+  focus loss.
 
-## Key Decisions
-1. **Cents not floats** — amounts stored as u32 cents to avoid float precision issues on the RISC-V soft float
-2. **Newest first** — transactions inserted at index 0, so list shows most recent at top
-3. **All-in-one key** — unlike contacts (index + individual), all transactions stored in a single JSON array. Simpler for sequential data.
-4. **Category cycling** — C key cycles through categories, no sub-menu needed
-
-## Build
+## Test / gate
 ```bash
-cargo build -p budget --target riscv32imac-unknown-xous-elf
+cd core && cargo test
+cd ../xous-dev-toolkit && bin/integrate --xous-root <xous-core> --grade -v ../precursor-budget
 ```
