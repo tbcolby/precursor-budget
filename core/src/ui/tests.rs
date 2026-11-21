@@ -1,12 +1,17 @@
 use super::*;
-use crate::entropy::testing::{Broken, XorShift};
+use crate::entropy::testing::{Broken, Stuck, XorShift};
 use crate::ledger::RECORD_VERSION;
 
 fn d(y: i32, m: u8, day: u8) -> Date { Date::new(y, m, day).unwrap() }
 
 fn ui() -> Ui { Ui::new(Some(d(2026, 11, 20))) }
 
-fn key(u: &mut Ui, i: Input) -> Effect { u.on_key(i, &mut XorShift(7)) }
+thread_local! {
+    // One generator per test thread, so successive saves get distinct keys.
+    static RNG: std::cell::RefCell<XorShift> = std::cell::RefCell::new(XorShift(0x2545_f491));
+}
+
+fn key(u: &mut Ui, i: Input) -> Effect { RNG.with(|r| u.on_key(i, &mut *r.borrow_mut())) }
 
 fn typ(u: &mut Ui, s: &str) {
     for c in s.chars() {
@@ -347,4 +352,18 @@ fn unreadable_settings_are_never_overwritten() {
     key(&mut u, Input::Right);
     assert_eq!(u.currency(), "$");
     assert_eq!(key(&mut u, Input::F(4)), Effect::None);
+}
+
+#[test]
+fn stuck_trng_never_overwrites_a_record() {
+    let mut u = ui();
+    key(&mut u, Input::Char('e'));
+    typ(&mut u, "1");
+    assert!(matches!(u.on_key(Input::F(1), &mut Stuck(5)), Effect::Persist(_)));
+    u.on_persisted(Ok(()));
+    key(&mut u, Input::Char('e'));
+    typ(&mut u, "2");
+    assert_eq!(u.on_key(Input::F(1), &mut Stuck(5)), Effect::None);
+    assert_eq!(u.status, "TRNG error: not saved");
+    assert_eq!(u.entries.len(), 1);
 }

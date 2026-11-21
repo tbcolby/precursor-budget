@@ -484,12 +484,9 @@ impl Ui {
                 k.clone()
             }
             None => {
-                let key = match new_key(entropy) {
-                    Ok(k) => k,
-                    Err(_) => {
-                        self.status = "TRNG error: not saved".into();
-                        return Effect::None;
-                    }
+                let Some(key) = self.fresh_key(entropy) else {
+                    self.status = "TRNG error: not saved".into();
+                    return Effect::None;
                 };
                 let seq = self.entries.iter().map(|e| e.txn.seq).max().map_or(1, |m| m.saturating_add(1));
                 self.entries.push(Entry {
@@ -513,6 +510,19 @@ impl Ui {
         self.cursor = self.month_entries().iter().position(|&i| self.entries[i].key == key).unwrap_or(0);
         self.screen = Screen::List;
         Effect::Persist(key)
+    }
+
+    /// A random key not already in use. A repeat means the TRNG is stuck
+    /// (or astronomically unlucky); after a few tries, give up rather than
+    /// overwrite an existing record.
+    fn fresh_key<E: Entropy + ?Sized>(&self, entropy: &mut E) -> Option<String> {
+        for _ in 0..4 {
+            let k = new_key(entropy).ok()?;
+            if self.entry(&k).is_none() {
+                return Some(k);
+            }
+        }
+        None
     }
 
     /// Result of an `Effect::Persist`. On failure the change is rolled back
